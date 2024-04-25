@@ -1,0 +1,1082 @@
+<!doctype html>
+
+<html>
+
+  <head>
+    <title>PhyloViz</title>
+
+    <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1, maximum-scale=1">
+
+    <script>
+        // constants
+        const nameKey = "name";
+        const varReads = "var_reads";
+        const totalReads = "total_reads";
+        const varReadProb = "var_read_prob";
+        const clustersKey = "clusters";
+        const prevClustersKey = "prev_clusters";
+        const useNameKey = "use_name";
+        
+        const supervariantsKey = "supervariants";
+        const parentsKey = "struct";
+        const paramsKey = "params";
+        const variantsKey = "variants";
+        const FKey = "phi";
+        const treeIndexKey = "treeIndex";
+
+        // for clustering
+        const ROOT = 0;
+        const NO_CLUSTER = -1;
+
+        localStorage.removeItem(supervariantsKey);
+        localStorage.removeItem(parentsKey);
+        localStorage.removeItem(paramsKey);
+        localStorage.removeItem(variantsKey);
+        localStorage.removeItem(FKey);
+        localStorage.removeItem(treeIndexKey);
+        localStorage.removeItem(useNameKey);
+        localStorage.removeItem(prevClustersKey);
+
+    </script>
+
+    <script>
+        // MATH FUNCTIONS 
+        function minimum(a, b) {
+            return a.map((x, i) => Math.min(x,b[i]));
+        }
+
+        function maximum(a, b) {
+            return a.map((x, i) => Math.max(x,b[i]));
+        }
+
+        function roundToTwo(num) {
+            return +(Math.round(num + "e+2")  + "e-2");
+        }
+
+        function logBinomLikelihood(k, n, p) {
+        p = Math.max(1e-30, Math.min(1-1e-3, p));
+        q = Math.max(1e-30, Math.min(1-1e-3, 1-p));
+        return Math.log(math.combinations(n,k)) + k*Math.log(p) + (n-k)*Math.log(q);
+        }
+
+        function LLH(c, supervariants, ccfs) {
+        var totalLLH = 0;
+        let numSamples = ccfs.length;
+        for(let id of c)
+        {
+            for(let s = 0; s < numSamples; s++) {
+                let p = supervariants[id][varReadProb][s]*ccfs[s];
+                let k = supervariants[id][varReads][s];
+                let n = supervariants[id][totalReads][s];
+                totalLLH += logBinomLikelihood(k,n,p); 
+            }
+        }
+        return totalLLH;
+
+        }
+
+        function fisherExactTest(k1, k2, n1, n2) {
+            let combinedLogPvalues = 0;
+            let numSamples = k1.length;
+            for(let i = 0; i < numSamples; i++) {
+                combinedLogPvalues += Math.log((1 - ((math.combinations(n1[i], k1[i]) * math.combinations(n2[i], k2[i])) 
+                          / math.combinations(n1[i]+n2[i], k1[i]+k2[i]))));
+            }
+            return Math.exp(combinedLogPvalues);
+        }
+
+        function rbfKernel(a, b) {
+            return math.exp(-math.sum(math.dotPow(math.subtract(a,b),2)));
+        }
+    </script>
+
+    <script>
+        function dfsFindLineages(parents) {
+            const parentsCopy = parents.slice();
+            const stack = [ROOT];
+            const lineages = [];
+            let newLineage = [];
+
+            while (stack.length > 0) {
+                const u = stack.pop();
+                const children = parentsCopy.map((p, i) => (p === u ? i + 1 : -1)).filter(child => child !== -1);
+                children.forEach(child => {
+                    parentsCopy[child - 1] = NO_CLUSTER;
+                    stack.push(child);
+                });
+                
+                if (u !== ROOT) {
+                    newLineage.push(u);
+                }
+
+                if ((children.length > 1 || children.length === 0) && newLineage.length > 0) {
+                    lineages.push([...newLineage]);
+                    newLineage = [];
+                }
+            }
+
+            if (newLineage.length > 0) {
+                lineages.push(newLineage);
+            }
+            return lineages;
+        }
+
+        function computeEdgeWeights(allParents) {
+            if (allParents.length === 0) {
+                throw new Error("Must provide trees to cluster by lineages");
+            }
+
+            const n = allParents[0].length;
+            const W = Array.from({ length: n }, () => Array(n).fill(1e-100));
+
+            allParents.forEach(parents => {
+                const lineages = dfsFindLineages(parents);
+                lineages.forEach(l => {
+                    l.forEach(node => {
+                        for(let j of l) {
+                            W[node - 1][j-1] += 1 / l.length;
+                        }
+                    });
+                });
+            });
+
+            for (let i = 0; i < n; i++) {
+                W[i][i] = 0;
+            }
+
+            const numTrees = allParents.length;
+            for(let i = 0; i < n; i++) {
+                for(let j = 0; j < n; j++) {
+                    W[i][j] /= numTrees;
+                }
+            }
+            return W;
+        }
+    </script>
+        
+    
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/popper.js@1.16.1/dist/umd/popper.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-MrcW6ZMFYlzcLA8Nl+NtUVF0sA7MsXsP1UyJoMp4YLEuNSfAP+JcXn/tWtIaxVXM" crossorigin="anonymous"></script><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" crossorigin="anonymous">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC" crossorigin="anonymous">
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/1.5.3/jspdf.min.js"></script>
+    <script type="text/javascript" src="https://html2canvas.hertzen.com/dist/html2canvas.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
+    <script src="https://unpkg.com/cytoscape@3.23.0/dist/cytoscape.min.js"></script> 
+    <script src="https://unpkg.com/dagre@0.7.4/dist/dagre.js"></script>
+    <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+    <script src="https://unpkg.com/layout-base/layout-base.js"></script>
+    <script src="https://unpkg.com/cose-base/cose-base.js"></script>
+    <script src="https://unpkg.com/cytoscape-fcose/cytoscape-fcose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/compound-drag-and-drop@1.0.0/cytoscape-compound-drag-and-drop.min.js"></script>    <script src="file-loader.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.1/math.min.js"></script>
+
+    <script src="jLouvain.js"></script>
+
+    <style>
+      body {
+        font-family: helvetica neue, helvetica, liberation sans, arial, sans-serif;
+        font-size: 14px;
+      }
+
+      #sidebar {
+        height: 100%; /* Full-height: remove this if you want "auto" height */
+        width: 30%; /* Set the width of the sidebar */
+        position: fixed; /* Fixed Sidebar (stay in place on scroll) */
+        top: 0; /* Stay at the top */
+        right: 0;
+        bottom: 0;
+        background: #eee;
+        overflow-x: hidden; /* Disable horizontal scroll */
+        padding-top: 20px;
+      }
+
+      #cy {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width:70%;
+      }
+
+      #chart-section {
+        position: relative;
+        display: block;
+      }
+
+      h1 {
+        opacity: 0.5;
+        font-size: 1em;
+        font-weight: bold;
+      }
+
+      #options {
+        z-index: 2;
+        position: absolute;
+        right: 0;
+        top: 0;
+        margin: 0.5em;
+      }
+
+      .wrapper {
+            display: flex;
+            width: 100%;
+            align-items: stretch;
+      }
+
+      .Row {
+            display: table;
+            width: 100%; /*Optional*/
+            table-layout: fixed; /*Optional*/
+            border-spacing: 10px; /*Optional*/
+      }
+
+      .Column {
+            display: table-cell;
+      }
+
+      #accordionExample {
+        width: 100%;
+      }
+
+    </style>
+
+    <script>
+        
+      // LOCAL STORAGE SETUP
+      Storage.prototype.setObject = function(key, value) {
+        const event = new Event('itemInserted');
+
+        event.value = value; 
+        event.key = key;
+
+        document.dispatchEvent(event);
+
+         this.setItem(key, JSON.stringify(value));
+      }
+
+      Storage.prototype.getObject = function(key) {
+         var value = this.getItem(key);
+         return value && JSON.parse(value);
+      }
+
+      const localStorageSetHandler = function(e) {
+        if(e.key == useNameKey) {
+            if(e.value) {
+                var newJSON = cy.json();
+                newJSON.style[0] = {
+                    selector: 'node[name]',
+                    style: {
+                        'label': 'data(name)'
+                    }
+                }
+
+                let clusters = localStorage.getObject(prevClustersKey);
+                drawCharts(clusters);
+            }
+            else {
+                var newJSON = cy.json();
+                newJSON.style[0] = {
+                    selector: 'node',
+                    style: {
+                        'label': 'data(id)'
+                    }
+                }
+            }
+            cy.json(newJSON);
+        }
+
+      };
+
+      window.addEventListener("dataLoaded", event =>
+        window.document.dispatchEvent(new Event("DOMContentLoaded", {
+                bubbles: true,
+                cancelable: true
+       })));
+
+
+      document.addEventListener("itemInserted", localStorageSetHandler, false);
+
+
+      // UPDATE FUNCTION WHEN SOMETHING IS CHANGED
+      document.addEventListener('DOMContentLoaded', function(){
+
+        var nodes = [];
+        var edges = [];
+        let supervariants = localStorage.getObject(supervariantsKey);
+        let treeIndex = localStorage.getObject(treeIndexKey);
+        let allParents = localStorage.getObject(parentsKey);
+        if(supervariants && allParents)
+        {
+            let parents = allParents[treeIndex];
+
+            nodes.push({ data: { id: "root", name: "root", colorIndex: 0 } })
+            let svids = Object.keys(supervariants)
+
+            for(let id of svids)
+            {
+                nodes.push({ data: { id: id, name: supervariants[id][nameKey], colorIndex: 0 } })
+            }
+
+            for(let i = 0; i < parents.length; i++)
+            {
+                let parentID = parents[i];
+                let childID = svids[i];
+
+                if(parentID != 0)
+                {
+                    parentID = svids[parentID-1];
+                    parentName = svids[parentID-1];
+                }
+                else {
+                    parentID = "root";
+                }
+
+                edges.push({ data: {id:childID + "<-" + parentID, source:parentID, target:childID}})
+            }
+
+            // initialize charts and errors
+            let clusters = svids.map((id, _) => [id]);
+            drawCharts(clusters);
+            updateCCFError(clusters);
+
+            localStorage.setObject(prevClustersKey, clusters);
+
+
+            // set dropdown and its default
+            let numTrees = allParents.length;
+            dropdownHTML = Array.from({length: numTrees}, (_, i) => i + 1).map((i,_) => `<option value=${i-1}>Tree ${i}</option>`).join(``);
+            document.getElementById('treeIndexSelect').innerHTML = dropdownHTML;
+            document.getElementById('treeIndexSelect').value = treeIndex;
+        }
+
+        var config = {
+
+            container: document.getElementById('cy'),
+            styleEnabled: true,
+            animate: true,
+            style: [
+            {
+                selector: 'node',
+                style: {
+                'label': 'data(id)'
+                }
+            },
+
+            {
+                selector: 'node:parent',
+                style: {
+                'label': ''
+                }
+            },
+
+            {
+                selector: 'edge',
+                style: {
+                'curve-style': 'bezier',
+                'target-arrow-shape': 'triangle'
+                }
+            },
+
+            {
+                selector: '.cdnd-grabbed-node',
+                style: {
+                'background-color': 'red'
+                }
+            },
+
+            {
+                selector: '.cdnd-drop-sibling',
+                style: {
+                'background-color': 'red'
+                }
+            },
+
+            {
+                selector: '.cdnd-drop-target',
+                style: {
+                'border-color': 'red',
+                'border-style': 'dashed'
+                }
+            }
+            ],
+
+            elements: {
+                nodes: nodes,
+                edges: edges
+            }
+        };
+    
+        var cy = window.cy = cytoscape(config);
+
+        // default is dagre layout
+        cy.layout({name:"dagre"}).run();
+
+        var cdnd = window.cdnd = cy.compoundDragAndDrop();
+        var removeEmptyParents = true;
+
+        var isParentOfOneChild = function(node){
+          return node.isParent() && node.children().length === 1;
+        };
+
+        var removeParent = function(parent){
+          parent.children().move({ parent: null });
+          parent.remove();
+        };
+
+        const getBounds = (n, boundingBoxOptions) => n.boundingBox(boundingBoxOptions);
+        const getBoundsTuple = (n, boundingBoxOptions) => ({ node: n, bb: copyBounds(getBounds(n, boundingBoxOptions)) });
+        const copyBounds = bb => ({ x1: bb.x1, x2: bb.x2, y1: bb.y1, y2: bb.y2, w: bb.w, h: bb.h });
+        const getBoundsCopy = (n, boundingBoxOptions) => copyBounds(getBounds(n, boundingBoxOptions));
+
+        var setParent = window.setParent = (n, parent) => n.move({ parent: parent.id() });
+
+        // custom handler to remove parents with only 1 child on drop
+        cy.on('cdndout', function(event, dropTarget){
+          if( removeEmptyParents && isParentOfOneChild(dropTarget) ){
+            removeParent(dropTarget);
+          }
+        });
+
+        // magically update charts when two nodes as placed in same cluster
+        cy.on('cdnddrop', function(event, dropTarget, dropSibling) {
+
+            let supervariants = localStorage.getObject(supervariantsKey);
+            if(supervariants)
+            {
+                var clusters = [];
+                let svids = Object.keys(supervariants)
+
+                for(let elem of cy.elements())
+                {
+                    if(elem.children().length > 0)
+                    {
+                        var c = [];
+                        for(let ch of elem.children())
+                        {
+                            let id = ch.data().id;
+                            const index = svids.indexOf(id);
+                            if (index > -1) { 
+                                svids.splice(index, 1); 
+                            }
+                            c.push(id);
+                        }
+                        clusters.push(c);
+                    }
+                }
+                for(let id of svids) {
+                    clusters.push([id]);
+                }   
+
+                let prevClusters = localStorage.getObject(prevClustersKey);
+                let redraw = false;
+
+                if(prevClusters)
+                {
+                    // check if we actually need to redraw
+                    for(let i = 0; i < clusters.length; i++) {
+                        let found = false;
+                        for(let j = 0; j < prevClusters.length; j++) {
+                            let s1 = new Set(clusters[i]); let s2 = new Set(prevClusters[j]);
+                            if(setEq(s1, s2))
+                            {
+                                found = true;
+                            }
+                        }
+                        if(!found)
+                        {
+                            redraw = true;
+                            break;
+                        }
+                    }
+                }
+                else 
+                {
+                    redraw = true;
+                }
+
+                if(redraw)
+                {
+                    localStorage.setObject(prevClustersKey, clusters);
+                    updateCCFError(clusters);
+                    drawCharts(clusters);
+                }
+            }  
+        });
+
+        // COLOR TAP SETTINGS
+        var colors = ["#999999", "#87CEFA", "#3CB371", "#FF6347", "#DA70D6"]
+
+        // Set color of a node when clicked
+        cy.on('tap', 'node', function(e) {
+
+            let idx = e.target.data("colorIndex");
+
+            idx = (idx + 1) % colors.length;
+
+            e.target.style({
+                'background-color': colors[idx]
+            });
+
+            e.target.data({colorIndex: idx});
+        });
+
+        const dropdownMenu = document.getElementById('treeIndexSelect');
+        dropdownMenu.onchange = (event) => {
+                let treeIndex = Number(event.target.value);
+                localStorage.setObject(treeIndexKey, treeIndex);
+                window.document.dispatchEvent(new Event("DOMContentLoaded"));
+        }
+
+
+        // plot updates via button clicks 
+        const recenterBtn = document.getElementById('center-btn') 
+ 
+        recenterBtn.addEventListener('click', e => { 
+            cy.fit();
+        }); 
+
+        const zoomOutBtn = document.getElementById('zoom-out-btn') 
+ 
+        zoomOutBtn.addEventListener('click', e => { 
+            let box = cy.extent();
+            let newPosition = {x:(box["x1"] + box["x2"]) / 2, y:(box["y1"] + box["y2"]) / 2};
+            cy.zoom({level:cy.zoom()*0.8, position:newPosition});
+        }); 
+
+
+        const zoomInBtn = document.getElementById('zoom-in-btn') 
+ 
+        zoomInBtn.addEventListener('click', e => { 
+            let box = cy.extent();
+            let newPosition = {x:(box["x1"] + box["x2"]) / 2, y:(box["y1"] + box["y2"]) / 2};
+            cy.zoom({level:cy.zoom()*1.2, position:newPosition});
+        });
+
+        const savePDFBtn = document.getElementById('save-pdf-btn') 
+ 
+        savePDFBtn.addEventListener('click', e => { 
+
+        //     divs = ["cy", "chart-section"];
+        //     var pdf = new jsPDF(),
+        //                     pdfConf = {
+        //                         pagesplit: false,
+        //                         backgroundColor: '#FFF'
+        //                     };
+        //     const tasks = divs.map(div => html2canvas(div));
+
+        //     Promise.all(tasks).then(canvases =>
+        //     {
+        //         for (const canvas of canvases)
+        //         {
+        //             pdf.addHTML(canvasObj, 0, 0, pdfConf);
+        //             pdf.addPage();
+        //         }
+
+        //     });
+        // pdf.save("PhyloViz-Images.pdf");
+
+        });
+        const parsimonyBtn = document.getElementById('parsimony-tree-search-btn');
+ 
+        parsimonyBtn.addEventListener('click', e => { 
+
+            let allParents = localStorage.getObject(parentsKey);
+
+            if(allParents)
+            {
+                let numLineages = [];
+                allParents.forEach(parents => {
+                    const lineages = dfsFindLineages(parents);
+                    numLineages.push(lineages.length);
+                });
+
+                const indices = Array.from({ length: numLineages.length }, (_, i) => i + 1);
+                indices.sort((a, b) => numLineages[a] - numLineages[b]);
+                localStorage.setObject(treeIndex, indices[0]);
+                document.getElementById('treeIndexSelect').value = indices[0];
+                alert("Most parsimony tree indices: " + indices.slice(0,10).join(","));
+            // window.document.dispatchEvent(new Event("DOMContentLoaded"));
+
+            }
+
+
+        });
+
+        const dagreButton = document.getElementById('dagre-btn');
+ 
+        dagreButton.addEventListener('click', e => { 
+            window.cy.layout({name:"dagre", animate:true}).run();
+        });
+
+        const fcoseButton = document.getElementById('fcose-btn');
+
+        fcoseButton.addEventListener('click', e => { 
+            window.cy.layout({name:"fcose", animate:true}).run();
+        });
+
+        const fishersExactButton = document.getElementById('fishers-exact-btn');
+
+        fishersExactButton.addEventListener('click', e => {
+
+            let supervariants = localStorage.getObject(supervariantsKey);
+            let treeIndex = localStorage.getObject(treeIndexKey);
+            let allParents = localStorage.getObject(parentsKey);
+
+            if(supervariants && allParents)
+            {
+                let parents = allParents[treeIndex];
+                let nodes = Object.keys(supervariants);
+
+                for(let i = 0; i < parents.length; i++)
+                {
+                    let parentID = parents[i];
+                    let childID = nodes[i];
+
+                    if(parentID != 0)
+                    {
+                        parentID = nodes[parentID-1];
+                        parentName = nodes[parentID-1];
+                    }
+                    else {
+                        continue;
+                    }
+
+                    let pvalue = fisherExactTest(supervariants[childID][varReads], 
+                                        supervariants[parentID][varReads],
+                                        supervariants[childID][totalReads],
+                                        supervariants[parentID][totalReads]);
+                    let shouldJoin = pvalue <= 0.05;
+                    
+                    if(shouldJoin)
+                    {
+                        joinNodes(childID, parentID);
+                    }
+
+                    }
+                    
+                }
+        });
+
+        const louvainButton = document.getElementById('louvain-btn');
+
+        louvainButton.addEventListener('click', e => {
+            let supervariants = localStorage.getObject(supervariantsKey);
+            let treeIndex = localStorage.getObject(treeIndexKey);
+            let allParents = localStorage.getObject(parentsKey);
+
+            if(supervariants && allParents)
+            {
+                let parents = allParents[treeIndex];
+                let nodes = Object.keys(supervariants);
+                let W = computeEdgeWeights(allParents);
+                let edges = [];
+
+                for(let i = 0; i < parents.length; i++)
+                {
+                    let parentID = parents[i];
+                    let childID = nodes[i];
+
+                    if(parentID != 0)
+                    {
+                        parentID = nodes[parentID-1];
+                        parentName = nodes[parentID-1];
+                    }
+                    else {
+                        continue;
+                    }
+
+                    let parentIndex = Number(parentID.slice(1))
+                    let childIndex = Number(childID.slice(1))
+                    
+                    edges.push({source: parentID, target: childID, weight: W[parentIndex][childIndex]});
+                }
+
+                let partition = {};
+                let clusters = localStorage.getObject(prevClustersKey);
+                for(let i = 0; i < clusters.length; i++) {
+                    let c = clusters[i];
+                    for(let id of c) {
+                        partition[id] = i;
+                    }
+                }
+                let community = jLouvain()
+                    .nodes(nodes)
+                    .edges(edges)
+                    .partition_init(partition);
+                let result = community();
+                const newClusters = Object.entries(result).reduce((acc, [key, value]) => {
+                    if (!acc[value]) {
+                        acc[value] = [];
+                    }
+                    acc[value].push(key);
+                    return acc;
+                }, []).map(group => group);
+
+                for(let c of newClusters) {
+                    let parentID = c[0];
+                    for(let j = 1; j < c.length; j++) {
+                        joinNodes(c[j], parentID);
+                    }
+                }
+            }
+        });
+    });
+
+    function joinNodes(childID, parentID) {
+        let node = cy.nodes(`[id = '${childID}']`);
+        let sibling = cy.nodes(`[id = '${parentID}']`);
+        let parent = null;
+        if((node.data("parent") && sibling.data("parent"))) {
+            let nodesToParent = cy.nodes(`[parent = '${node.data("parent")}']`);
+            for(let n of nodesToParent) {
+            }
+        } else if (node.data("parent")) {
+            sibling.move({ parent: node.data("parent") });
+        } else if (sibling.data("parent")) { 
+            node.move({ parent: sibling.data("parent") });
+        } else {
+            parent = cy.add( cdnd.options.newParentNode(node, sibling) )
+            parent.addClass('cdnd-drop-target');
+
+            if(parent !== sibling) {
+                parent.addClass('cdnd-new-parent');
+            }
+
+            sibling.addClass('cdnd-drop-sibling');
+            setParent(sibling, parent);
+            setParent(node, parent);
+            cy.dropTarget = parent;
+            cy.dropSibling = sibling;
+        }
+    }
+    </script>
+
+  </head>
+
+  <body>
+    <h1>PhyloViz</h1>
+        <div id="sidebar" class="wrapper">
+            <div class="accordion" id="accordionExample">
+                <div class="accordion-item">
+                  <h2 class="accordion-header" id="headingOne">
+                    <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" aria-expanded="true" aria-controls="collapseOne">
+                        File I/O
+                    </button>
+                </h2>
+                <div id="collapseOne" class="accordion-collapse collapse show" aria-labelledby="headingOne">
+                  <div class="accordion-body">
+                    <form id="file-form" onsubmit="submitFiles(event)">
+                        <div class="mb-3">
+                            <label class="form-label">ssm file</label>
+                            <input class="form-control form-control-sm" type="file" name="ssm">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">params file</label>
+                            <input class="form-control form-control-sm" type="file" name="params">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">tree file</label>
+                            <input class="form-control form-control-sm" type="file" name="tree">
+                        </div>
+                        <button class="btn btn-primary" type="submit">Load files</button>
+                    </form>
+                   </div>
+                </div>
+            </div>
+            <div class="accordion-item">
+                <h2 class="accordion-header" id="headingTwo">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseTwo" aria-expanded="false" aria-controls="collapseTwo">
+                        Graph Controls
+                    </button>
+                </h2>
+                <div id="collapseTwo" class="accordion-collapse collapse" aria-labelledby="headingTwo">
+                  <div class="accordion-body text-center">
+                    <div class="dropdown mb-3">
+                        <select id="treeIndexSelect" class="form-select">
+                        </select>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" value="0" id="nodeLabelCheckBox" onchange="toggleLabel(this)" unchecked>
+                        <label class="form-check-label active" for="nodeLabelCheckBox">
+                            Toggle node labels
+                        </label>
+                    </div>
+                    <div mb-3>
+                        <button type="button" id="parsimony-tree-search-btn" class="btn btn-primary">Parsimony Tree Search</button>
+                    </div>
+                    <hr/>
+                    <div class="btn-group mb-3" role="group">
+                        <button type="button" id="zoom-out-btn" class="btn btn-primary">Zoom Out</button>
+                        <button type="button" id="center-btn" class="btn btn-primary">Re-center</button>
+                        <button type="button" id="zoom-in-btn" class="btn btn-primary">Zoom In</button>
+                    </div>
+                    <div class="btn-group mb-3" role="group">
+                        <button type="button" id="fcose-btn"  class="btn btn-secondary">fCose Layout</button>
+                        <button type="button" id="dagre-btn"  class="btn btn-secondary">Dagre Layout</button>
+                    </div>
+                    <hr/>
+                    <div class="btn-group mb-3" role="group">
+                        <button id="louvain-btn" type="button" class="btn btn-danger">Louvain Algorithm</button>
+                        <button id="fishers-exact-btn" type="button" class="btn btn-danger">Fishers Exact Test</button>
+                    </div>
+                  </div>
+               </div>
+            </div>
+            <div class="accordion-item">
+                <h2 class="accordion-header" id="headingThree">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseThree" aria-expanded="false" aria-controls="collapseThree">
+                        Evaluation
+                    </button>
+                </h2>
+                <div id="collapseThree" class="accordion-collapse collapse" aria-labelledby="headingThree">
+                  <div class="accordion-body">
+                    <div id="error-section">
+                    </div>
+                    <div>
+                        <div id="chart-section"></div>
+                    </div>    
+                  </div>
+                </div>  
+            </div>         
+            <div class="accordion-item">
+                <h2 class="accordion-header" id="headingFour">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseFour" aria-expanded="false" aria-controls="collapseFour">
+                        Save Panel
+                    </button>
+                </h2>
+                <div id="collapseFour" class="accordion-collapse collapse" aria-labelledby="headingFour">
+                  <div class="accordion-body">
+                    <div class="btn-group-vertical">
+                        <button id="save-pdf-btn" type="button" class="btn btn-success">Save PDF</button>
+                    </div>
+                  </div>
+                </div>
+            </div>
+            <div class="accordion-item">
+                <h2 class="accordion-header" id="headingFive">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseFive" aria-expanded="false" aria-controls="collapseFive">
+                        Help
+                    </button>
+                </h2>
+                <div id="collapseFour" class="accordion-collapse collapse" aria-labelledby="headingFour">
+                  <div class="accordion-body">
+                    <div id="helpBody"></div>
+                  </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="cy"></div>
+  </body>
+
+  <script>
+
+    const setEq = (x, y) =>
+        x.size === y.size &&
+        [...x].every((x_) => y.has(x_));
+
+    function updateCCFError(clusters)
+    {
+        let supervariants = localStorage.getObject(supervariantsKey);
+        let treeIndex = localStorage.getObject(treeIndexKey);
+        let F = localStorage.getObject(FKey)[treeIndex];
+
+        if(supervariants && F)
+        {
+            let svids = Object.keys(supervariants)
+            let totalCCFError = 0;
+            let totalLLH = 0;
+
+            for(let i = 0; i < clusters.length; i++)
+            {
+                // HUGE ASSUMPTION -- we assume the variant read probabilities have been already scaled to be the same
+                let c = clusters[i];
+
+                dataCCFs = computeCCF(colSum(c.map((id, _) => supervariants[id][varReads])), 
+                                  colSum(c.map((id, _) => supervariants[id][totalReads])), 
+                                  supervariants[c[0]][varReadProb]);
+
+                treeCCFs = computeCWACCFs(c, supervariants, F.slice(1));
+                totalCCFError += ccfError(c, supervariants, treeCCFs);
+                totalLLH += LLH(c, supervariants, treeCCFs);
+
+            }
+
+            errorTableHTML = 
+            `
+            <table class="table">
+                <thead>
+                    <tr>
+                    <th scope="col">Total CCF Error</th>
+                    <th scope="col">Total LLH</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                    <td>${roundToTwo(totalCCFError)}</td>
+                    <td>${roundToTwo(totalLLH)}</td>
+                    </tr>
+                </tbody>
+            </table>
+            `
+
+            // update total ccf error
+            document.getElementById('error-section').innerHTML = errorTableHTML;
+
+        }
+
+    }
+
+    function toggleLabel(checkBoxElem) {
+        if(checkBoxElem.checked) {
+            localStorage.setObject(useNameKey, true);
+        }
+        else {
+            localStorage.setObject(useNameKey, false);
+        }
+    }
+
+    function drawCharts(clusters)
+    {
+        let supervariants = localStorage.getObject(supervariantsKey);
+        let treeIndex = localStorage.getObject(treeIndexKey);
+        let F = localStorage.getObject(FKey)[treeIndex];
+        let useName = localStorage.getObject(useNameKey);
+
+        if(supervariants && F)
+        {
+            let svids = Object.keys(supervariants)
+
+            html = "";
+            // populate chart area
+            for(let i = 0; i < clusters.length; i++)
+            {
+                let detailString = "";
+                for(let j = 0; j < Math.min(clusters[i].length, 4); j++)
+                {
+                    if(j === 3)
+                    {
+                        detailString += "...";
+                    }
+                    else {
+                        if(useName) {
+                            detailString += supervariants[clusters[i][j]][nameKey];
+                        }
+                        else {
+                            detailString += clusters[i][j];
+                        }
+                    }
+                    if(j !== clusters[i].length - 1) {
+                        detailString += ",";
+                    }
+                }
+                accordionHTML = `
+                <div class="accordion accordion-flush" id="accordionFlush${i}">
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="flush-heading${i}">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#flush-collapse${i}" aria-expanded="false" aria-controls="flush-collapse${i}">
+                            ${detailString}
+                        </button>
+                        </h2>
+                        <div id="flush-collapse${i}" class="accordion-collapse collapse" aria-labelledby="flush-heading${i}"">
+                        <div class="accordion-body" id="accordionBody${i}"></div>
+                        </div>
+                    </div>
+                </div>
+                `
+                html += `<div><canvas id='chart${i}'></canvas></div><div>${accordionHTML}</div><hr/>`;
+            }
+
+            document.getElementById('chart-section').innerHTML = html;
+
+            for(let i = 0; i < clusters.length; i++)
+            {
+                // HUGE ASSUMPTION -- we assume the variant read probabilities have been already scaled to be the same
+                let c = clusters[i];
+
+                // for now just skip over computation if a cluster contains the root
+                if(c.includes("root")) {
+                    continue;
+                }
+
+                dataCCFs = computeCCF(colSum(c.map((id, _) => supervariants[id][varReads])), 
+                                  colSum(c.map((id, _) => supervariants[id][totalReads])), 
+                                  supervariants[c[0]][varReadProb]);
+
+                treeCCFs = computeCWACCFs(c, supervariants, F.slice(1));
+                
+                const ctx = document.getElementById('chart' + i);
+
+                new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                    labels: Array.from({length: dataCCFs.length}, (_, i) => i + 1),
+                    datasets: [
+                        {
+                        data: dataCCFs,
+                        borderWidth: 1,
+                        label: "Data CCFs"
+                        },
+                        {
+                        data: treeCCFs,
+                        borderWidth: 1,
+                        label: "Tree CCFs"
+                        },]
+                    },
+                    options: {
+                        plugins: {
+                                legend: {
+                                    display: true,
+                                },
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                max: 1.0,
+                                title: {
+                                    display: true,
+                                    text: 'CCF'
+                                }
+                            },
+                        }
+                    }
+                }); 
+
+                let tableHTML = `
+                <table class="table">
+                    <thead>
+                        <tr>
+                        <th scope="col">ID</th>
+                        <th scope="col">CCF Error</th>
+                        <th scope="col">LLH</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                `
+
+                for(let id of c)
+                {
+                    let err = roundToTwo(ccfError([id], supervariants, treeCCFs));
+                    let llh = roundToTwo(LLH([id], supervariants, treeCCFs));
+                    tableHTML += `
+                    <tr>
+                        <th scope="row">${id}</th>
+                        <td>${err}</td>
+                        <td>${llh}</td>
+                    </tr>
+
+                    `
+                }
+
+                tableHTML += "</tbody></table}";
+                document.getElementById(`accordionBody${i}`).innerHTML = tableHTML;
+
+            }
+        }
+    }
+</script>
+</html>
+
