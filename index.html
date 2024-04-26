@@ -16,7 +16,8 @@
         const clustersKey = "clusters";
         const prevClustersKey = "prev_clusters";
         const useNameKey = "use_name";
-        
+        const collapseClustersKey = "collapse_clusters";
+
         const supervariantsKey = "supervariants";
         const parentsKey = "struct";
         const paramsKey = "params";
@@ -36,6 +37,8 @@
         localStorage.removeItem(treeIndexKey);
         localStorage.removeItem(useNameKey);
         localStorage.removeItem(prevClustersKey);
+        localStorage.removeItem(collapseClustersKey);
+        localStorage.setObject(useNameKey, false);
 
     </script>
 
@@ -54,24 +57,30 @@
         }
 
         function logBinomLikelihood(k, n, p) {
-        p = Math.max(1e-30, Math.min(1-1e-3, p));
-        q = Math.max(1e-30, Math.min(1-1e-3, 1-p));
-        return Math.log(math.combinations(n,k)) + k*Math.log(p) + (n-k)*Math.log(q);
+            p = Math.max(1e-3, Math.min(1-1e-3, p));
+            q = Math.max(1e-3, Math.min(1-1e-3, 1-p));
+            return Math.log(math.combinations(n,k)) + k*Math.log(p) + (n-k)*Math.log(q);
         }
 
         function LLH(c, supervariants, ccfs) {
-        var totalLLH = 0;
-        let numSamples = ccfs.length;
-        for(let id of c)
-        {
-            for(let s = 0; s < numSamples; s++) {
-                let p = supervariants[id][varReadProb][s]*ccfs[s];
-                let k = supervariants[id][varReads][s];
-                let n = supervariants[id][totalReads][s];
-                totalLLH += logBinomLikelihood(k,n,p); 
+            var totalLLH = 0;
+            let numSamples = ccfs.length;
+            for(let id of c)
+            {
+                for(let s = 0; s < numSamples; s++) {
+                    let p = supervariants[id][varReadProb][s]*ccfs[s];
+                    let k = supervariants[id][varReads][s];
+                    let n = supervariants[id][totalReads][s];
+                    if(n > 200)
+                    {
+                        let f = n / 200;
+                        n = 200;
+                        k = Math.floor(k / f);
+                    }
+                    totalLLH += logBinomLikelihood(k,n,p) / numSamples; 
+                }
             }
-        }
-        return totalLLH;
+            return totalLLH;
 
         }
 
@@ -152,6 +161,7 @@
             }
             return W;
         }
+
     </script>
         
     
@@ -233,13 +243,11 @@
             border-spacing: 10px; /*Optional*/
       }
 
-      .Column {
-            display: table-cell;
-      }
-
       #accordionExample {
         width: 100%;
       }
+
+      .collapsed-child { opacity: 0; }
 
     </style>
 
@@ -286,8 +294,7 @@
                 }
             }
             cy.json(newJSON);
-        }
-
+        } 
       };
 
       window.addEventListener("dataLoaded", event =>
@@ -383,22 +390,18 @@
             {
                 selector: '.cdnd-grabbed-node',
                 style: {
-                'background-color': 'red'
                 }
             },
 
             {
                 selector: '.cdnd-drop-sibling',
                 style: {
-                'background-color': 'red'
                 }
             },
 
             {
                 selector: '.cdnd-drop-target',
                 style: {
-                'border-color': 'red',
-                'border-style': 'dashed'
                 }
             }
             ],
@@ -617,6 +620,37 @@
             window.cy.layout({name:"fcose", animate:true}).run();
         });
 
+
+        const collapseButton = document.getElementById('collapse-nodes-btn');
+
+        collapseButton.addEventListener('click', e => {
+            let clusters = localStorage.getObject(prevClustersKey);
+            for(let c of clusters) {
+                let numChildren = 0;
+                let nodeIndex = 0;
+                for(let i = 0; i < c.length; i++)
+                {
+                    let node = cy.nodes(`[id = '${c[i]}']`);
+                    if(node.children.length > numChildren)
+                    {
+                        nodeIndex = i;
+                        numChildren = node.children.length;
+                    }
+                }
+                let centerNode = cy.nodes(`[id = '${c[nodeIndex]}']`);
+
+                for(let i = 0; i < c.length; i++) {
+                    if(i === nodeIndex)
+                    {
+                        continue;
+                    }
+                    let id = c[i];
+                    let node = cy.nodes(`[id = '${id}']`);
+                    node.position(centerNode.position());
+                }
+            }
+        });
+
         const fishersExactButton = document.getElementById('fishers-exact-btn');
 
         fishersExactButton.addEventListener('click', e => {
@@ -624,11 +658,11 @@
             let supervariants = localStorage.getObject(supervariantsKey);
             let treeIndex = localStorage.getObject(treeIndexKey);
             let allParents = localStorage.getObject(parentsKey);
-
+            let clusters = [];
             if(supervariants && allParents)
             {
-                let parents = allParents[treeIndex];
                 let nodes = Object.keys(supervariants);
+                let parents = allParents[treeIndex];
 
                 for(let i = 0; i < parents.length; i++)
                 {
@@ -653,11 +687,30 @@
                     if(shouldJoin)
                     {
                         joinNodes(childID, parentID);
+                        let added = false;
+                        for(let j = 0; j < clusters.length; j++) {
+                            let c = clusters[j];
+                            if(c.includes(childID)) {
+                                clusters[j].push(parentID);
+                                added = true;
+                                break;
+                            } else if(c.includes(parentID)) {
+                                clusters[j].push(childID);
+                                added = true;
+                                break;
+                            }
+                        }
+
+                        if(!added) {
+                            clusters.push([parentID, childID]);
+                        }
                     }
 
-                    }
-                    
                 }
+                localStorage.setObject(prevClustersKey, clusters);
+                updateCCFError(clusters);
+                drawCharts(clusters);
+            }
         });
 
         const louvainButton = document.getElementById('louvain-btn');
@@ -723,6 +776,36 @@
                 }
             }
         });
+
+        const lineageClusterButton = document.getElementById("lineage-cluster-btn");
+
+        lineageClusterButton.addEventListener('click', e => {
+            let supervariants = localStorage.getObject(supervariantsKey);
+            let treeIndex = localStorage.getObject(treeIndexKey);
+            let allParents = localStorage.getObject(parentsKey);
+
+            if(supervariants && allParents)
+            {
+                let svids = Object.keys(supervariants);
+                let parents = allParents[treeIndex];
+                const lineages = dfsFindLineages(parents);
+                var clusters = [];
+                lineages.forEach(l => {
+                    clusters.push(l.map((i,_) => svids[i-1]));
+                });
+
+                for(let c of clusters) {
+                        let parentID = c[0];
+                        for(let j = 1; j < c.length; j++) {
+                            joinNodes(c[j], parentID);
+                        }
+                }
+                localStorage.setObject(prevClustersKey, clusters);
+                updateCCFError(clusters);
+                drawCharts(clusters);
+            }
+        });
+
     });
 
     function joinNodes(childID, parentID) {
@@ -752,6 +835,7 @@
             cy.dropSibling = sibling;
         }
     }
+
     </script>
 
   </head>
@@ -804,7 +888,10 @@
                             Toggle node labels
                         </label>
                     </div>
-                    <div mb-3>
+                    <div class="mb-3">
+                        <button type="button" id="collapse-nodes-btn" class="btn btn-primary">Collapse clusters</button>
+                    </div>
+                    <div class="mb-3">
                         <button type="button" id="parsimony-tree-search-btn" class="btn btn-primary">Parsimony Tree Search</button>
                     </div>
                     <hr/>
@@ -821,6 +908,7 @@
                     <div class="btn-group mb-3" role="group">
                         <button id="louvain-btn" type="button" class="btn btn-danger">Louvain Algorithm</button>
                         <button id="fishers-exact-btn" type="button" class="btn btn-danger">Fishers Exact Test</button>
+                        <button id="lineage-cluster-btn" type="button" class="btn btn-danger">Cluster By Lineage</button>
                     </div>
                   </div>
                </div>
@@ -886,7 +974,7 @@
 
         if(supervariants && F)
         {
-            let svids = Object.keys(supervariants)
+            let svids = Object.keys(supervariants);
             let totalCCFError = 0;
             let totalLLH = 0;
 
@@ -938,6 +1026,7 @@
             localStorage.setObject(useNameKey, false);
         }
     }
+
 
     function drawCharts(clusters)
     {

@@ -34,9 +34,9 @@ function computeCWACCFs(c, supervariants, F)
     var CWACCFs = [];
     for(let j = 0; j < nSamples; j++)
     {
-        CWACCFs.push(numer[j]/denom[j]);
+        CWACCFs.push(Math.max(1e-30,Math.min(1-1e-3, numer[j]/denom[j])));
     }
-    return minimum(CWACCFs, Array(n_samples).fill(1.0));
+    return CWACCFs;
 }
 
 function ccfError(c, supervariants, treeCCFs)
